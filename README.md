@@ -15,7 +15,7 @@ npm run build
 npm run firefox
 ```
 
-`npm run firefox` builds the extension and launches Firefox with the unpacked extension using `web-ext`. Alternatively, open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on…**, and select `dist/manifest.json`.
+`npm run firefox` builds the extension and launches Firefox with the unpacked extension using `web-ext`. Alternatively, open `about:debugging#/runtime/this-firefox`, choose 'Load Temporary Add-on', and select `dist/manifest.json`.
 
 For UI development:
 
