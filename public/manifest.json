@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Tilia",
+  "version": "0.1.0",
+  "description": "Organize Firefox tabs in a clean, treelike sidebar.",
+  "permissions": ["tabs", "storage"],
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "sidebar_action": {
+    "default_title": "Tilia",
+    "default_panel": "sidebar.html",
+    "default_icon": "icons/tilia.svg",
+    "open_at_install": true
+  },
+  "action": {
+    "default_title": "Open Tilia",
+    "default_icon": "icons/tilia.svg"
+  },
+  "commands": {
+    "_execute_sidebar_action": {
+      "suggested_key": { "default": "Alt+Shift+T" },
+      "description": "Toggle the Tilia sidebar"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tilia@example.com",
+      "strict_min_version": "128.0"
+    }
+  }
+}

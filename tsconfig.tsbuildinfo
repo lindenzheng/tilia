@@ -1,0 +1,1 @@
+{"root":["./src/background/index.ts","./src/shared/types.ts","./src/sidebar/app.tsx","./src/sidebar/main.tsx","./vite.config.ts"],"version":"5.6.3"}
