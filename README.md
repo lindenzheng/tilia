@@ -1,2 +1,2 @@
 # tilia
-A firefox extension for treelike tab management.
+A Firefox extension for treelike tab management.
