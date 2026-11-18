@@ -1,7 +1,7 @@
 # tilia
 A Firefox extension for treelike tab management.
 
-## Requirements
+##
 
 - Node.js 20.17+ or a compatible current LTS
 - npm
