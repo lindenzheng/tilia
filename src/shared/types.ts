@@ -1,23 +1,18 @@
 export interface BrowserTab {
-  id: number;
-  windowId: number;
-  index: number;
-  title: string;
-  url?: string;
-  favIconUrl?: string;
-  active: boolean;
-  pinned: boolean;
-  audible?: boolean;
-  mutedInfo?: { muted: boolean };
-  status?: string;
-  openerTabId?: number;
+  id: number; windowId: number; index: number; title: string; url?: string; favIconUrl?: string;
+  active: boolean; pinned: boolean; audible?: boolean; mutedInfo?: { muted: boolean };
+  status?: string; openerTabId?: number;
 }
-
-export type TabEventMessage =
-  | { type: 'TAB_CREATED'; tab: BrowserTab }
-  | { type: 'TAB_UPDATED'; tabId: number; changeInfo: Record<string, unknown>; tab: BrowserTab }
-  | { type: 'TAB_REMOVED'; tabId: number; windowId: number }
-  | { type: 'TAB_ACTIVATED'; tabId: number; windowId: number }
-  | { type: 'TAB_MOVED'; tabId: number; windowId: number; toIndex: number }
-  | { type: 'TAB_ATTACHED'; tabId: number; newWindowId: number; newPosition: number }
-  | { type: 'TAB_DETACHED'; tabId: number; oldWindowId: number };
+export interface TreeNode {
+  id: string;
+  kind: 'group' | 'tab';
+  title?: string;
+  tabId?: number;
+  parentId: string | null;
+  children: string[];
+  collapsed?: boolean;
+  order: number;
+}
+export interface WindowTree { windowId: number; rootIds: string[]; nodes: Record<string, TreeNode>; }
+export interface PersistedState { windows: Record<string, WindowTree>; }
+export type TabEventMessage = { type: string; [key: string]: unknown };

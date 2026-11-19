@@ -1,170 +1,64 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, X, Plus, ChevronDown, ChevronRight, Globe, Volume2, VolumeX, Pin, Star, MoreHorizontal, Layers3 } from 'lucide-react';
-import type { BrowserTab, TabEventMessage } from '../shared/types';
+import type { ReactNode, CSSProperties } from 'react';
+import { Search, X, Plus, ChevronDown, ChevronRight, Globe, Volume2, VolumeX, Pin, Star, FolderPlus, Folder, Layers3, Pencil, Trash2, MoreHorizontal } from 'lucide-react';
+import type { BrowserTab, TreeNode, WindowTree, PersistedState, TabEventMessage } from '../shared/types';
 
-type TabNode = BrowserTab;
-
-function getDomain(url?: string) {
-  if (!url) return 'New tab';
-  try { return new URL(url).hostname.replace(/^www\./, ''); }
-  catch { return url; }
-}
-
-function TabIcon({ tab }: { tab: BrowserTab }) {
-  if (tab.favIconUrl && !tab.favIconUrl.startsWith('chrome:')) {
-    return <img className="favicon" src={tab.favIconUrl} alt="" onError={(e) => { e.currentTarget.style.display = 'none'; }} />;
+const STORAGE_KEY = 'tilia-tree-state';
+const makeId = () => `node-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
+const domain = (url?: string) => { if (!url) return 'New tab'; try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
+function TabIcon({ tab }: { tab: BrowserTab }) { return tab.favIconUrl && !tab.favIconUrl.startsWith('chrome:') ? <img className="favicon" src={tab.favIconUrl} alt="" onError={e => {e.currentTarget.style.display='none';}}/> : <Globe size={15} className="fallback-icon"/>; }
+function createTree(windowId: number, tabs: BrowserTab[]): WindowTree {
+  const nodes: Record<string, TreeNode> = {}; const rootIds: string[] = [];
+  const unsortedId = makeId(); nodes[unsortedId] = { id: unsortedId, kind: 'group', title: 'Unsorted', parentId: null, children: [], order: 0 }; rootIds.push(unsortedId);
+  const tabNodes = new Map<number, string>();
+  for (const tab of tabs.filter(t => !t.pinned).sort((a,b)=>a.index-b.index)) {
+    const id = `tab-${tab.id}`; tabNodes.set(tab.id,id); nodes[id] = {id,kind:'tab',tabId:tab.id,parentId:unsortedId,children:[],order:nodes[unsortedId].children.length}; nodes[unsortedId].children.push(id);
   }
-  return <Globe size={15} className="fallback-icon" />;
+  for (const tab of tabs) {
+    if (tab.pinned || !tab.openerTabId) continue;
+    const childId = tabNodes.get(tab.id), parentId = tabNodes.get(tab.openerTabId); if (!childId || !parentId || childId===parentId) continue;
+    const parent = nodes[parentId], child = nodes[childId]; if (!parent || !child) continue;
+    parent.children.push(childId); child.parentId=parentId; nodes[unsortedId].children=nodes[unsortedId].children.filter(id=>id!==childId);
+  }
+  return {windowId,rootIds,nodes};
 }
-
+function normalizeTree(tree: WindowTree, tabs: BrowserTab[]): WindowTree {
+  const live = new Set(tabs.filter(t=>!t.pinned).map(t=>t.id));
+  for (const [id,node] of Object.entries(tree.nodes)) {
+    if (node.kind==='tab' && !live.has(node.tabId!)) delete tree.nodes[id];
+    else node.children = node.children.filter(child=>tree.nodes[child]);
+  }
+  const known = new Set(Object.values(tree.nodes).filter(n=>n.kind==='tab').map(n=>n.tabId));
+  const unsorted = Object.values(tree.nodes).find(n=>n.kind==='group' && n.title==='Unsorted') ?? (()=>{ const id=makeId(); const g:TreeNode={id,kind:'group',title:'Unsorted',parentId:null,children:[],order:tree.rootIds.length};tree.nodes[id]=g;tree.rootIds.push(id);return g;})();
+  tabs.filter(t=>!t.pinned && !known.has(t.id)).sort((a,b)=>a.index-b.index).forEach(tab=>{const id=`tab-${tab.id}`; tree.nodes[id]={id,kind:'tab',tabId:tab.id,parentId:unsorted.id,children:[],order:unsorted.children.length};unsorted.children.push(id); if(tab.openerTabId){const opener=tree.nodes[`tab-${tab.openerTabId}`];if(opener&&opener.id!==id){unsorted.children=unsorted.children.filter(child=>child!==id);tree.nodes[id].parentId=opener.id;opener.children.push(id);}}});
+  tree.rootIds=tree.rootIds.filter(id=>tree.nodes[id]);
+  // Rebuild parent references and remove detached nodes by placing them in Unsorted.
+  const reachable=new Set<string>(); const visit=(id:string)=>{if(reachable.has(id)||!tree.nodes[id])return;reachable.add(id);tree.nodes[id].children.forEach(visit);};tree.rootIds.forEach(visit);
+  for(const node of Object.values(tree.nodes)) if(!reachable.has(node.id)){node.parentId=unsorted.id;unsorted.children.push(node.id);reachable.add(node.id);}
+  return tree;
+}
 export default function App() {
-  const [tabs, setTabs] = useState<TabNode[]>([]);
-  const [query, setQuery] = useState('');
-  const [currentWindowId, setCurrentWindowId] = useState<number | null>(null);
-  const [showAllWindows, setShowAllWindows] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const [error, setError] = useState('');
-
-  const refresh = useCallback(async () => {
-    try {
-      const [currentWindow, allTabs] = await Promise.all([
-        browser.windows.getCurrent(),
-        browser.tabs.query({})
-      ]);
-      setCurrentWindowId(currentWindow.id ?? null);
-      setTabs(allTabs.filter((tab) => tab.id !== undefined && tab.windowId !== undefined) as unknown as TabNode[]);
-      setError('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to read browser tabs.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        searchInputRef.current?.focus();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    void refresh();
-    const listener = (message: TabEventMessage | unknown) => {
-      if (!message || typeof message !== 'object' || !('type' in message)) return;
-      // Re-query for a canonical snapshot. This also handles tabs moving between windows.
-      void refresh();
-    };
-    browser.runtime.onMessage.addListener(listener);
-    return () => {
-      browser.runtime.onMessage.removeListener(listener);
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [refresh]);
-
-  const visibleTabs = useMemo(() => {
-    const scoped = showAllWindows ? tabs : tabs.filter((tab) => tab.windowId === currentWindowId);
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    return scoped
-      .filter((tab) => !tab.pinned)
-      .filter((tab) => !normalizedQuery || `${tab.title} ${tab.url ?? ''}`.toLocaleLowerCase().includes(normalizedQuery))
-      .sort((a, b) => a.windowId - b.windowId || a.index - b.index);
-  }, [tabs, currentWindowId, query, showAllWindows]);
-
-  const pinnedTabs = useMemo(() => {
-    const scoped = showAllWindows ? tabs : tabs.filter((tab) => tab.windowId === currentWindowId);
-    return scoped.filter((tab) => tab.pinned).sort((a, b) => a.windowId - b.windowId || a.index - b.index);
-  }, [tabs, currentWindowId, showAllWindows]);
-
-  const activateTab = async (tab: BrowserTab) => {
-    try {
-      await browser.tabs.update(tab.id, { active: true });
-      if (tab.windowId !== currentWindowId) await browser.windows.update(tab.windowId, { focused: true });
-    } catch (err) { setError(err instanceof Error ? err.message : 'Could not activate tab.'); }
-  };
-
-  const closeTab = async (tabId: number) => {
-    try { await browser.tabs.remove(tabId); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not close tab.'); }
-  };
-
-  const createTab = async () => {
-    try { await browser.tabs.create({}); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not create tab.'); }
-  };
-
-  const toggleMute = async (tab: BrowserTab) => {
-    try { await browser.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted }); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not change mute state.'); }
-  };
-
-  const togglePin = async (tab: BrowserTab) => {
-    try { await browser.tabs.update(tab.id, { pinned: !tab.pinned }); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not pin tab.'); }
-  };
-
-  const renderTab = (tab: BrowserTab) => (
-    <div className={`tab-row ${tab.active ? 'active' : ''}`} key={tab.id}>
-      <button className="tab-main" onClick={() => void activateTab(tab)} title={`${tab.title}\n${tab.url ?? ''}`}>
-        <TabIcon tab={tab} />
-        <span className="tab-copy">
-          <span className="tab-title">{tab.title || getDomain(tab.url)}</span>
-          <span className="tab-domain">{getDomain(tab.url)}</span>
-        </span>
-        {tab.audible && <Volume2 size={13} className="audio-indicator" />}
-      </button>
-      <div className="tab-actions">
-        {tab.audible && <button className="icon-button" title={tab.mutedInfo?.muted ? 'Unmute tab' : 'Mute tab'} onClick={() => void toggleMute(tab)}>{tab.mutedInfo?.muted ? <VolumeX size={14}/> : <Volume2 size={14}/>}</button>}
-        <button className="icon-button" title={tab.pinned ? 'Unpin tab' : 'Pin tab'} onClick={() => void togglePin(tab)}><Pin size={13}/></button>
-        <button className="icon-button close-button" title="Close tab" onClick={() => void closeTab(tab.id)}><X size={14}/></button>
-      </div>
-    </div>
-  );
-
-  return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div className="brand-row">
-          <div className="brand-mark"><Layers3 size={17}/></div>
-          <div className="brand-text"><strong>Tilia</strong><span>{visibleTabs.length + pinnedTabs.length} tabs in view</span></div>
-          <button className="header-action" onClick={() => void createTab()} title="New tab"><Plus size={17}/></button>
-          <button className="header-action" onClick={() => void refresh()} title="Refresh tabs"><MoreHorizontal size={18}/></button>
-        </div>
-        <label className="search-box">
-          <Search size={15}/>
-          <input ref={searchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tabs…" aria-label="Search tabs" />
-          {query && <button className="clear-search" onClick={() => setQuery('')} title="Clear search"><X size={13}/></button>}
-          <kbd>⌘ K</kbd>
-        </label>
-        <div className="scope-row">
-          <span className="section-eyebrow">WORKSPACE</span>
-          <button className={`scope-toggle ${showAllWindows ? 'selected' : ''}`} onClick={() => setShowAllWindows((value) => !value)}>
-            {showAllWindows ? 'All windows' : 'This window'} <ChevronDown size={13}/>
-          </button>
-        </div>
-      </header>
-
-      {error && <div className="error-banner" role="alert">{error}</div>}
-      <section className="tab-content">
-        {pinnedTabs.length > 0 && (
-          <div className="tab-section">
-            <div className="section-heading"><span className="section-eyebrow"><Pin size={11}/> PINNED</span><span className="count-pill">{pinnedTabs.length}</span></div>
-            {pinnedTabs.map(renderTab)}
-          </div>
-        )}
-        <div className="tab-section tree-section">
-          <div className="section-heading"><span className="section-eyebrow"><Layers3 size={11}/> ALL TABS</span><span className="count-pill">{visibleTabs.length}</span></div>
-          {loading ? <div className="empty-state">Loading tabs…</div> : visibleTabs.length === 0 ? (
-            <div className="empty-state">{query ? 'No tabs match your search.' : 'No open tabs.'}</div>
-          ) : (
-            <div className="tree-list">
-              {visibleTabs.map((tab) => <div className="tree-node" key={tab.id}>{renderTab(tab)}</div>)}
-            </div>
-          )}
-        </div>
-      </section>
-      <footer className="app-footer"><span><span className="status-dot"/> Live browser sync</span><span>PHASE 1 · TAB LIST</span></footer>
-    </main>
-  );
+ const [tabs,setTabs]=useState<BrowserTab[]>([]); const [trees,setTrees]=useState<Record<string,WindowTree>>({}); const [query,setQuery]=useState(''); const [currentWindowId,setCurrentWindowId]=useState<number|null>(null); const [allWindows,setAllWindows]=useState(false); const [loading,setLoading]=useState(true); const [error,setError]=useState(''); const [ready,setReady]=useState(false); const searchRef=useRef<HTMLInputElement>(null); const dragRef=useRef<string|null>(null);
+ const saveTrees=useCallback(async(next:Record<string,WindowTree>)=>{setTrees(next);try{await browser.storage.local.set({[STORAGE_KEY]:{windows:next} satisfies PersistedState});}catch(e){setError(e instanceof Error?e.message:'Could not save tree.');}},[]);
+ const refresh=useCallback(async()=>{try{const [win,all]=await Promise.all([browser.windows.getCurrent(),browser.tabs.query({})]);const valid=all.filter(t=>t.id!==undefined&&t.windowId!==undefined) as unknown as BrowserTab[];setCurrentWindowId(win.id??null);setTabs(valid);const stored=await browser.storage.local.get(STORAGE_KEY);const persisted=(stored[STORAGE_KEY] as PersistedState|undefined)?.windows??{};const next={...persisted};for(const wid of [...new Set(valid.map(t=>t.windowId))]){const winTabs=valid.filter(t=>t.windowId===wid);next[String(wid)]=normalizeTree(next[String(wid)]??createTree(wid,winTabs),winTabs);}setTrees(next);await browser.storage.local.set({[STORAGE_KEY]:{windows:next} satisfies PersistedState});setError('');}catch(e){setError(e instanceof Error?e.message:'Unable to synchronize tabs.');}finally{setLoading(false);setReady(true);}},[]);
+ useEffect(()=>{void refresh();const listener=(msg:TabEventMessage)=>{if(msg&&typeof msg==='object'&&'type'in msg)void refresh();};browser.runtime.onMessage.addListener(listener);const onKey=(e:KeyboardEvent)=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();searchRef.current?.focus();}};window.addEventListener('keydown',onKey);return()=>{browser.runtime.onMessage.removeListener(listener);window.removeEventListener('keydown',onKey);};},[refresh]);
+ const scopedTabs=useMemo(()=>allWindows?tabs:tabs.filter(t=>t.windowId===currentWindowId),[tabs,allWindows,currentWindowId]); const pinned=scopedTabs.filter(t=>t.pinned).sort((a,b)=>a.windowId-b.windowId||a.index-b.index); const tabMap=useMemo(()=>new Map(tabs.map(t=>[t.id,t])),[tabs]);
+ const mutate=useCallback((windowId:number,fn:(tree:WindowTree)=>WindowTree)=>{const key=String(windowId);const current=trees[key];if(!current)return;const next={...trees,[key]:fn(structuredClone(current))};void saveTrees(next);},[trees,saveTrees]);
+ const activate=async(tab:BrowserTab)=>{try{await browser.tabs.update(tab.id,{active:true});if(tab.windowId!==currentWindowId)await browser.windows.update(tab.windowId,{focused:true});}catch(e){setError(e instanceof Error?e.message:'Activation failed.');}};
+ const close=async(id:number)=>{try{await browser.tabs.remove(id);}catch(e){setError(e instanceof Error?e.message:'Close failed.');}};
+ const newTab=async()=>{try{await browser.tabs.create({});}catch(e){setError(e instanceof Error?e.message:'Could not create tab.');}};
+ const toggleMute=async(t:BrowserTab)=>{try{await browser.tabs.update(t.id,{muted:!t.mutedInfo?.muted});}catch(e){setError(e instanceof Error?e.message:'Mute failed.');}};
+ const togglePin=async(t:BrowserTab)=>{try{await browser.tabs.update(t.id,{pinned:!t.pinned});}catch(e){setError(e instanceof Error?e.message:'Pin failed.');}};
+ const addGroup=(windowId:number,parentId:string|null=null)=>mutate(windowId,tree=>{const id=makeId();const node:TreeNode={id,kind:'group',title:'New group',parentId,children:[],order:0};tree.nodes[id]=node;if(parentId&&tree.nodes[parentId])tree.nodes[parentId].children.push(id);else tree.rootIds.push(id);return tree;});
+ const renameGroup=(windowId:number,id:string)=>{const current=trees[String(windowId)]?.nodes[id];if(!current||current.title==='Unsorted')return;const name=prompt('Group name',current.title??'Group');if(name?.trim())mutate(windowId,t=>{t.nodes[id].title=name.trim();return t;});};
+ const deleteGroup=(windowId:number,id:string)=>{if(trees[String(windowId)]?.nodes[id]?.title==='Unsorted')return;if(!confirm('Delete this group? Tabs inside will be moved to Unsorted.'))return;mutate(windowId,t=>{const node=t.nodes[id];if(!node)return t;const unsorted=Object.values(t.nodes).find(n=>n.kind==='group'&&n.title==='Unsorted');const dest=unsorted&&unsorted.id!==id?unsorted:undefined;const parent=node.parentId? t.nodes[node.parentId]:undefined;if(parent)parent.children=parent.children.filter(c=>c!==id);else t.rootIds=t.rootIds.filter(c=>c!==id);const move=(child:string)=>{const n=t.nodes[child];if(!n)return;if(n.kind==='group'){n.children.forEach(move);delete t.nodes[child];}else if(dest){n.parentId=dest.id;dest.children.push(child);}else {delete t.nodes[child];}};node.children.forEach(move);delete t.nodes[id];return t;});};
+ const toggleCollapse=(windowId:number,id:string)=>mutate(windowId,t=>{t.nodes[id].collapsed=!t.nodes[id].collapsed;return t;});
+ const moveNode=(windowId:number,nodeId:string,targetId:string|null)=>mutate(windowId,t=>{const node=t.nodes[nodeId];if(!node||nodeId===targetId)return t;let target=targetId?t.nodes[targetId]:null;if(target){let p:TreeNode|null=target;while(p){if(p.id===nodeId)return t;p=p.parentId?t.nodes[p.parentId]??null:null;}}const old=node.parentId?t.nodes[node.parentId]:null;if(old)old.children=old.children.filter(id=>id!==nodeId);else t.rootIds=t.rootIds.filter(id=>id!==nodeId);node.parentId=targetId;if(target)target.children.push(nodeId);else t.rootIds.push(nodeId);return t;});
+ const filtered= query.trim().toLowerCase(); const renderTree=(tree:WindowTree,ids:string[],depth=0):ReactNode=>ids.map(id=>{const n=tree.nodes[id];if(!n)return null;const tab=n.kind==='tab'?tabMap.get(n.tabId!):null;const match=!filtered||((tab?.title??n.title??'').toLowerCase().includes(filtered)||(tab?.url??'').toLowerCase().includes(filtered));const descendantMatch=n.children.some(child=>{const c=tree.nodes[child];return c&&(c.kind==='group'?containsMatch(c.id):matchesTab(c.tabId));});function matchesTab(tabId?:number){const t=tabId?tabMap.get(tabId):undefined;return !!t&&(`${t.title} ${t.url??''}`).toLowerCase().includes(filtered);}function containsMatch(groupId:string):boolean{const g=tree.nodes[groupId];return !!g&&g.children.some(child=>{const c=tree.nodes[child];return !!c&&(c.kind==='tab'?matchesTab(c.tabId):containsMatch(c.id));});}if(filtered&&!match&&!descendantMatch)return null;const canCollapse=n.children.length>0;return <div key={id} className={`tree-node ${n.kind} ${tab?.active?'active-node':''}`} style={{'--depth':depth} as CSSProperties} draggable onDragStart={e=>{dragRef.current=id;e.dataTransfer.setData('text/plain',id);e.dataTransfer.effectAllowed='move';}} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();e.stopPropagation();const dragged=e.dataTransfer.getData('text/plain')||dragRef.current;if(dragged&&dragged!==id)moveNode(tree.windowId,dragged,id);dragRef.current=null;}}>
+ {n.kind==='group'?<div className="group-row"><button className="group-toggle" onClick={()=>toggleCollapse(tree.windowId,id)}>{canCollapse?(n.collapsed?<ChevronRight size={14}/>:<ChevronDown size={14}/>):<span className="chevron-placeholder"/>}<Folder size={15}/><span className="group-title">{n.title||'Group'}</span><span className="node-count">{n.children.length}</span></button><div className="group-actions"><button title="Add subgroup" onClick={()=>addGroup(tree.windowId,id)}><FolderPlus size={13}/></button><button title="Rename group" onClick={()=>renameGroup(tree.windowId,id)}><Pencil size={12}/></button><button title="Delete group" onClick={()=>deleteGroup(tree.windowId,id)}><Trash2 size={12}/></button></div></div>:tab?<div className={`tab-row ${tab.active?'active':''}`}><button className="tab-main" onClick={()=>void activate(tab)} title={`${tab.title}\n${tab.url??''}`}><TabIcon tab={tab}/><span className="tab-copy"><span className="tab-title">{tab.title||domain(tab.url)}</span><span className="tab-domain">{domain(tab.url)}</span></span>{tab.audible&&<Volume2 size={13} className="audio-indicator"/>}</button><div className="tab-actions"><button className="icon-button" title={tab.mutedInfo?.muted?'Unmute':'Mute'} onClick={()=>void toggleMute(tab)}>{tab.mutedInfo?.muted?<VolumeX size={13}/>:<Volume2 size={13}/>}</button><button className="icon-button" title="Pin tab" onClick={()=>void togglePin(tab)}><Pin size={13}/></button><button className="icon-button close-button" title="Close tab" onClick={()=>void close(tab.id)}><X size={13}/></button></div></div>:null}
+ {canCollapse&&!n.collapsed&&<div className="node-children">{renderTree(tree,n.children,depth+1)}</div>}
+ </div>;});
+ return <main className="app-shell"><header className="app-header"><div className="brand-row"><div className="brand-mark"><Layers3 size={17}/></div><div className="brand-text"><strong>Tilia</strong><span>{scopedTabs.length} tabs · {Object.values(trees).filter(t=>allWindows||t.windowId===currentWindowId).length} window tree(s)</span></div><button className="header-action" title="New tab" onClick={()=>void newTab()}><Plus size={17}/></button><button className="header-action" title="New group" onClick={()=>currentWindowId&&addGroup(currentWindowId)}><FolderPlus size={16}/></button><button className="header-action" title="Refresh" onClick={()=>void refresh()}><MoreHorizontal size={18}/></button></div><label className="search-box"><Search size={15}/><input ref={searchRef} value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search tabs and groups…" aria-label="Search"/>{query&&<button className="clear-search" onClick={()=>setQuery('')}><X size={13}/></button>}<kbd>⌘ K</kbd></label><div className="scope-row"><span className="section-eyebrow">WORKSPACE</span><button className={`scope-toggle ${allWindows?'selected':''}`} onClick={()=>setAllWindows(v=>!v)}>{allWindows?'All windows':'This window'}<ChevronDown size={13}/></button></div></header>
+ {error&&<div className="error-banner" role="alert">{error}</div>}<section className="tab-content">{pinned.length>0&&<div className="tab-section"><div className="section-heading"><span className="section-eyebrow"><Pin size={11}/> FIREFOX PINNED</span><span className="count-pill">{pinned.length}</span></div>{pinned.map(t=><div className="tab-row" key={t.id}><button className="tab-main" onClick={()=>void activate(t)}><TabIcon tab={t}/><span className="tab-copy"><span className="tab-title">{t.title}</span><span className="tab-domain">{domain(t.url)}</span></span></button><div className="tab-actions"><button className="icon-button" title="Unpin" onClick={()=>void togglePin(t)}><Pin size={13}/></button><button className="icon-button close-button" onClick={()=>void close(t.id)}><X size={13}/></button></div></div>)}</div>}
+ <div className="tab-section tree-section"><div className="section-heading"><span className="section-eyebrow"><Layers3 size={11}/> TREE</span><span className="count-pill">{scopedTabs.filter(t=>!t.pinned).length}</span><button className="section-add" title="Add group" onClick={()=>currentWindowId&&addGroup(currentWindowId)}><FolderPlus size={13}/></button></div>{loading||!ready?<div className="empty-state">Loading tabs…</div>:scopedTabs.filter(t=>!t.pinned).length===0?<div className="empty-state">No open tabs.</div>:<div className="tree-list" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();const id=e.dataTransfer.getData('text/plain')||dragRef.current;if(id){const owner=Object.values(trees).find(t=>t.nodes[id]);if(owner)moveNode(owner.windowId,id,null);}dragRef.current=null;}}>{Object.values(trees).filter(t=>allWindows||t.windowId===currentWindowId).map(tree=><div className="window-tree" key={tree.windowId}>{allWindows&&<div className="window-label">Window {tree.windowId}</div>}{renderTree(tree,tree.rootIds)}</div>)}</div>}</div></section><footer className="app-footer"><span><span className="status-dot"/> Live sync · Saved locally</span><span>PHASE 2 · TREE</span></footer></main>;
 }
